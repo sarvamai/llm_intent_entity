@@ -22,7 +22,8 @@ parts/
 sdist/
 var/
 wheels/
-*.egg-info/    # Add this line
+*.egg-info/
+src/**/*.egg-info/    # Add this line for src-layout
 
 # Cache and logs
 outputs/
@@ -36,4 +37,4 @@ outputs/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbsrc/**/*.egg-info/
