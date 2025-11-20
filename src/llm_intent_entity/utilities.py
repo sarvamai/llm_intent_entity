@@ -153,15 +153,6 @@ def calculate_entity_metrics(entity_scores: List[float]) -> dict:
         "std": float(np.std(entity_scores_array))
     }
 
-def calculate_combined_score(intent_scores: List[int], entity_scores: List[float], intent_weight: float = 0.5) -> float:
-    """Calculate a combined score from intent and entity scores"""
-    if not intent_scores or not entity_scores or len(intent_scores) != len(entity_scores):
-        return 0.0
-    
-    intent_accuracy = calculate_intent_accuracy(intent_scores)
-    entity_mean = calculate_entity_metrics(entity_scores)["mean"]
-    
-    return intent_weight * intent_accuracy + (1 - intent_weight) * entity_mean
 
 # SHEETS
 

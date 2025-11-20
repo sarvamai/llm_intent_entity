@@ -7,7 +7,7 @@ in ASR outputs using Large Language Models.
 
 from .main import process_dataset_for_intent_entity_evaluation
 from .llm_api import ChatCompletionsAPI
-from .utilities import IndicNormalizer, calculate_intent_accuracy, calculate_entity_metrics, calculate_combined_score
+from .utilities import IndicNormalizer, calculate_intent_accuracy, calculate_entity_metrics
 
 __version__ = "0.1.0"
 __all__ = [
@@ -15,6 +15,5 @@ __all__ = [
     "ChatCompletionsAPI", 
     "IndicNormalizer",
     "calculate_intent_accuracy",
-    "calculate_entity_metrics", 
-    "calculate_combined_score"
+    "calculate_entity_metrics"
 ]

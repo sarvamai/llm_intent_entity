@@ -115,7 +115,6 @@ The tool generates:
 
 - **Intent Accuracy**: Percentage of samples where intent is preserved
 - **Entity Score**: Mean/median/std of entity preservation scores (0-1)
-- **Combined Score**: Weighted combination of intent and entity scores
 
 ## Configuration
 

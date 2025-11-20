@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 from typing import List, Dict, Any, Tuple
 import pandas as pd
-from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics, calculate_combined_score
+from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -195,23 +195,17 @@ def calculate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
             "total_samples": len(df),
             "valid_samples": 0,
             "intent_accuracy": 0.0,
-            "entity_metrics": {"mean": 0.0, "median": 0.0, "std": 0.0},
-            "combined_score": 0.0
+            "entity_metrics": {"mean": 0.0, "median": 0.0, "std": 0.0}
         }
 
     intent_accuracy = calculate_intent_accuracy(valid_rows["intent_score"].tolist())
     entity_metrics = calculate_entity_metrics(valid_rows["entity_score"].tolist())
-    combined_score = calculate_combined_score(
-        valid_rows["intent_score"].tolist(),
-        valid_rows["entity_score"].tolist()
-    )
 
     return {
         "total_samples": len(df),
         "valid_samples": len(valid_rows),
         "intent_accuracy": intent_accuracy,
-        "entity_metrics": entity_metrics,
-        "combined_score": combined_score
+        "entity_metrics": entity_metrics
     }
 
 def save_outputs(df: pd.DataFrame, logs: List[Dict], failed: List[Dict], outputs_dir: Path, sheet_name: str, worksheet_prefix: str, creds_path: Path):
@@ -286,7 +280,6 @@ def process_dataset_for_intent_entity_evaluation(
     print(f"Intent accuracy: {metrics['intent_accuracy']:.4f}")
     print(f"Entity score (mean): {metrics['entity_metrics']['mean']:.4f}")
     print(f"Entity score (median): {metrics['entity_metrics']['median']:.4f}")
-    print(f"Combined score: {metrics['combined_score']:.4f}")
     
     outputs_dir = PROJECT_ROOT / "outputs" / Path(dataset_path).stem
     outputs_dir.mkdir(parents=True, exist_ok=True)
