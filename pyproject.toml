@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-intent-entity"
+version = "0.1.0"
+description = "LLM-based evaluation for intent and entity extraction accuracy in ASR outputs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gspread>=6.2.1",
+    "indic-nlp-library>=0.92",
+    "joblib>=1.5.1",
+    "jsonlines>=4.0.0",
+    "numpy>=1.24.0",
+    "openai>=1.93.0",
+    "pandas>=2.3.0",
+    "pydantic>=2.0.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.53.0",
+    "vertexai>=1.71.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

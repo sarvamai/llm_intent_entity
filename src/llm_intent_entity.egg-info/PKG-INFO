@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: llm-intent-entity
+Version: 0.1.0
+Summary: LLM-based evaluation for intent and entity extraction accuracy in ASR outputs
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: gspread>=6.2.1
+Requires-Dist: indic-nlp-library>=0.92
+Requires-Dist: joblib>=1.5.1
+Requires-Dist: jsonlines>=4.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: openai>=1.93.0
+Requires-Dist: pandas>=2.3.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: tqdm>=4.67.1
+Requires-Dist: transformers>=4.53.0
+Requires-Dist: vertexai>=1.71.1
+
 # LLM Intent Entity Evaluation
 
 This repository provides tools for evaluating intent and entity extraction accuracy in ASR (Automatic Speech Recognition) outputs using Large Language Models (LLMs), specifically Google's Gemini 2.5 Flash via Vertex AI.
@@ -115,18 +133,35 @@ The tool supports text normalization for:
 - `prompt_template.txt`: LLM evaluation prompt template
 - `pyproject.toml`: Project dependencies
 
-## Replication
-# Clone/get the project
-- cd llm_evaluation/llm_intent_entity
+## Caching
 
-# Create virtual environment
-- uv venv --python 3.12
+Results are automatically cached in `outputs/cache/` to avoid redundant API calls. Use `ignore_cache=True` to force re-evaluation.
 
-# Activate environment
-- source .venv/bin/activate
+## Error Handling
 
-# Install exact versions from lock file
-- uv pip sync uv.lock
+- Failed API calls are logged and saved separately
+- Malformed responses are handled gracefully
+- Detailed error messages and tracebacks for debugging
 
-# Or install in editable mode
-- uv pip install -e .
+## Example Output
+
+```
+=== INTENT ENTITY EVALUATION RESULTS ===
+Total samples: 1000
+Valid samples: 995
+Intent accuracy: 0.8450
+Entity score (mean): 0.7821
+Entity score (median): 0.8500
+Combined score: 0.8136
+```
+
+## Contributing
+
+1. Ensure proper error handling for new features
+2. Add appropriate logging
+3. Update documentation for new parameters
+4. Test with multiple languages and edge cases
+
+## License
+
+[Add your license information here]
