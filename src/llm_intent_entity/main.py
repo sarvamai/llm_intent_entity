@@ -1,18 +1,21 @@
 from pydantic import BaseModel
-from llm_api import ChatCompletionsAPI
+from .llm_api import ChatCompletionsAPI
 import logging
 from pathlib import Path
 import json
 from typing import List, Dict, Any, Tuple
 import pandas as pd
-from utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics, calculate_combined_score
+from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics, calculate_combined_score
 
 logger = logging.getLogger(__name__)
 
+# Get the project root directory (3 levels up from this file)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 try:
-    PROMPT_TEMPLATE = (Path(__file__).parent / "prompt_template.txt").read_text()
+    PROMPT_TEMPLATE = (PROJECT_ROOT / "prompt_template.txt").read_text()
 except FileNotFoundError:
-    raise FileNotFoundError("prompt_template.txt not found. Please create it in the same directory as main.py.")
+    raise FileNotFoundError(f"prompt_template.txt not found at {PROJECT_ROOT / 'prompt_template.txt'}. Please ensure it exists in the project root.")
 
 class IntentEntityResponse(BaseModel):
     index: int
@@ -83,7 +86,7 @@ def query_llm_for_intent_entity_evaluation(
     ignore_cache: bool = False,
 ) -> Tuple[list, list]:
     """Query LLM for intent entity evaluation"""
-    cache_dir = Path(__file__).parent / "outputs" / "cache"
+    cache_dir = PROJECT_ROOT / "outputs" / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{dataset_name}_intent_entity_cache.jsonl"
 
@@ -285,7 +288,7 @@ def process_dataset_for_intent_entity_evaluation(
     print(f"Entity score (median): {metrics['entity_metrics']['median']:.4f}")
     print(f"Combined score: {metrics['combined_score']:.4f}")
     
-    outputs_dir = Path(__file__).parent / "outputs" / Path(dataset_path).stem
+    outputs_dir = PROJECT_ROOT / "outputs" / Path(dataset_path).stem
     outputs_dir.mkdir(parents=True, exist_ok=True)
     
     # Create log records for failed/successful responses
