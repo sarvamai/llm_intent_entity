@@ -116,17 +116,9 @@ The tool supports text normalization for:
 - `pyproject.toml`: Project dependencies
 
 ## Replication
-# Clone/get the project
+- Clone/get the project
 - cd llm_evaluation/llm_intent_entity
-
-# Create virtual environment
 - uv venv --python 3.12
-
-# Activate environment
 - source .venv/bin/activate
-
-# Install exact versions from lock file
 - uv pip sync uv.lock
-
-# Or install in editable mode
-- uv pip install -e .
+- uv pip install -e . (Or install in editable mode)
