@@ -172,7 +172,8 @@ def push_to_sheet(df, sheet_name, subsheet_name, creds_path, overwrite=False, ch
             sheet = client.open(sheet_name)
         except gspread.exceptions.SpreadsheetNotFound:
             sheet = client.create(sheet_name)
-            sheet.share("", perm_type="anyone", role="writer")
+            # To share with your org, uncomment and replace with your domain:
+            # sheet.share("yourdomain.com", perm_type="domain", role="reader")
         final_name = subsheet_name
         try:
             existing_worksheet = sheet.worksheet(subsheet_name)
