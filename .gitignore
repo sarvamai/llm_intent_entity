@@ -37,4 +37,15 @@ outputs/
 
 # OS
 .DS_Store
-Thumbs.dbsrc/**/*.egg-info/
+Thumbs.db
+
+# Credentials and secrets
+.env
+*.env
+credentials.json
+service_account.json
+*_credentials.json
+*_service_account.json
+*.p12
+*.pfx
+*.pem
