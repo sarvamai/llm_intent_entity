@@ -124,6 +124,9 @@ class ChatCompletionsAPI:
         self.request_queue = queue.Queue()
         self.semaphore = threading.Semaphore(self.num_workers)
 
+        # Store credentials for token refresh
+        self._credentials: Optional[Credentials] = None
+
         if not gemini:
             self.client = OpenAI(
                 api_key=api_key, 
@@ -142,6 +145,13 @@ class ChatCompletionsAPI:
             if not project_id:
                 raise ValueError("For Gemini models, project_id is required. It can be passed directly or be present in the credentials file.")
             credentials.refresh(Request())
+            # FIX: Store credentials so token can be refreshed before each request.
+            # The access token obtained at __init__ time has a short TTL (~1 hour).
+            # For large batches that run longer than the token lifetime, the client
+            # would use a stale/expired token, causing 401 Unauthorized errors.
+            self._credentials = credentials
+            self._gemini_location = location
+            self._gemini_project_id = project_id
             self.client = OpenAI(
                 api_key=credentials.token, 
                 base_url=f"https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/endpoints/openapi",
@@ -151,6 +161,27 @@ class ChatCompletionsAPI:
         print(f"API Initialized - Model: {self.model_name}, Workers: {self.num_workers}, "
               f"Temperature: {self.temperature}, Timeout: {self.timeout}, Delay: {self.delay}, "
               f"Parse Endpoint: {self.parse_endpoint_supported}")
+
+    def _refresh_gemini_token_if_needed(self):
+        """Refresh the Gemini OAuth2 access token if it is expired or about to expire.
+        
+        Google OAuth2 access tokens are short-lived (~1 hour). Batches that run
+        longer than the token TTL will receive 401 Unauthorized errors unless
+        the token is proactively refreshed before each API call.
+        """
+        if self._credentials is None:
+            return
+        if not self._credentials.valid:
+            self._credentials.refresh(Request())
+            self.client = OpenAI(
+                api_key=self._credentials.token,
+                base_url=(
+                    f"https://{self._gemini_location}-aiplatform.googleapis.com"
+                    f"/v1/projects/{self._gemini_project_id}"
+                    f"/locations/{self._gemini_location}/endpoints/openapi"
+                ),
+                timeout=self.timeout
+            )
 
     def is_parse_endpoint_supported(self):
         class ResponseModel(BaseModel):
@@ -177,6 +208,10 @@ class ChatCompletionsAPI:
        if key is None: key = {'uuid': str(uuid.uuid4())}
        with self.semaphore:
            try:
+                # FIX: Refresh token before each API call to handle long-running batches
+                # where the initial short-lived access token may have expired.
+                self._refresh_gemini_token_if_needed()
+
                 messages = []
                 system_content = system_prompt or self.system_prompt
                 if system_content:
@@ -186,8 +221,14 @@ class ChatCompletionsAPI:
                     "model": self.model_name,
                     "messages": messages,
                 }
-                if temperature or self.temperature:
-                    params["temperature"] = temperature if temperature is not None else self.temperature
+                # FIX: The original condition `if temperature or self.temperature` is falsy
+                # when both are 0.0 (the default), silently dropping the temperature
+                # parameter from the request. This causes non-deterministic model
+                # behaviour because the server falls back to its own default temperature.
+                # Use explicit `is not None` checks instead.
+                effective_temperature = temperature if temperature is not None else self.temperature
+                if effective_temperature is not None:
+                    params["temperature"] = effective_temperature
                 if self.max_tokens:
                     params["max_tokens"] = self.max_tokens
                 if self.timeout:
