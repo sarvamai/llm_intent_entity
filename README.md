@@ -47,6 +47,54 @@ The LLM identifies key **entities** in the ground truth—such as people, places
 - It penalizes for missing entities (e.g., "call John" vs. "call") and incorrectly substituted entities (e.g., "John Smith" vs. "Jon Smith").
 - If the ground truth contains no entities (e.g., "hello, how are you?"), the score is 1, as there were no entities to get wrong.
 
+### Deterministic scoring for critical entities
+
+Critical personal and financial entities use a hybrid pipeline instead of an
+LLM-generated equality judgment:
+
+1. The LLM copies raw spans and assigns one of six types: `PHONE_NUMBER`,
+   `ACCOUNT_ID`, `AMOUNT`, `DATE`, `PERSON`, or `LOCATION`.
+2. Python canonicalizes each span deterministically.
+3. A strict one-to-one matcher calculates precision, recall, F1, and Named Entity
+   Error Rate (NEER).
+
+Phone numbers and account IDs are compared as exact digit sequences. The spoken
+number parser handles Unicode digits, English and Indian-language number words,
+code-mixing, `double`/`triple`, Indian digit grouping, lakh/crore amounts,
+currencies, and decimals. Its inverse lexicons are generated from
+[`indic-numtowords`](https://github.com/AI4Bharat/indic-numtowords), with additional
+Hinglish forms for common ASR output.
+
+For example, these phone spans both canonicalize to `5872033946`:
+
+```text
+fifty-eight seven twenty double teen nau forty-six
+fifty eight seven twenty double three nine forty six
+```
+
+The matcher remains type-aware: an `AMOUNT(INR 5000)` never matches an
+`ACCOUNT_ID(5000)`, and a date never matches an identifier containing the same
+digits. Person and location matching is exact by default and can be configured to
+use a fuzzy threshold:
+
+```python
+from llm_intent_entity import MatchPolicy, score_typed_entities
+
+policy = MatchPolicy(
+    person_mode="exact",
+    location_mode="fuzzy",
+    fuzzy_threshold=0.92,
+    date_order="DMY",
+)
+result = score_typed_entities(reference_entities, hypothesis_entities, "hi", policy)
+```
+
+Ambiguous or unsupported parses do not guess. They set
+`entity_review_required=true`, explain the reason in `entity_review_reasons`, and
+use `-1` in the backward-compatible `entity_score` column so aggregate reporting
+excludes the row. Cached responses from the old schema continue to use their
+original LLM entity score.
+
 ## Conclusion
 
 By focusing on intent and entity preservation, this LLM-based evaluation provides a far more accurate and practical assessment of an ASR model's real-world utility. It moves beyond rigid textual comparisons to measure what truly matters: whether the user's meaning was successfully understood. This approach is essential for developing ASR systems that are robust, reliable, and truly useful, especially in the linguistically diverse context of Indic languages.
@@ -70,7 +118,7 @@ By focusing on intent and entity preservation, this LLM-based evaluation provide
 ### Basic Usage
 
 ```python
-from main import process_dataset_for_intent_entity_evaluation
+from llm_intent_entity import MatchPolicy, process_dataset_for_intent_entity_evaluation
 
 process_dataset_for_intent_entity_evaluation(
     dataset_path="/path/to/your_dataset.csv",
@@ -83,7 +131,8 @@ process_dataset_for_intent_entity_evaluation(
     output_sheet_name="Intent Entity Analysis",
     output_worksheet_name="Results",
     ignore_cache=False,
-    gemini_location=""
+    gemini_location="",
+    entity_match_policy=MatchPolicy(date_order="DMY"),
 )
 ```
 
@@ -111,10 +160,20 @@ The tool generates:
 3. **Failed Requests**: Any failed API calls for debugging
 4. **Google Sheets**: Results automatically uploaded (if configured)
 
+Typed evaluations add the following audit columns:
+
+- `ground_truth_typed_entities` and `hypothesis_typed_entities`
+- `entity_precision`, `entity_recall`, and `entity_f1`
+- `named_entity_error_rate`
+- `entity_review_required` and `entity_review_reasons`
+- `entity_scoring_method` (`typed_deterministic`, `legacy_llm`, or `error`)
+
 ### Metrics
 
 - **Intent Accuracy**: Percentage of samples where intent is preserved
 - **Entity Score**: Mean/median/std of entity preservation scores (0-1)
+- **Typed Entity Precision / Recall / F1**: Strict typed-span preservation metrics
+- **Named Entity Error Rate**: `(substitutions + deletions + insertions) / reference entities`
 
 ## Configuration
 
@@ -140,5 +199,6 @@ The tool supports text normalization for:
 - `main.py`: Main processing logic and orchestration
 - `llm_api.py`: Vertex AI API wrapper with threading and error handling
 - `utilities.py`: Text normalization and Google Sheets utilities
+- `typed_entities.py`: Deterministic typed-entity canonicalization and metrics
 - `prompt_template.txt`: LLM evaluation prompt template
 - `pyproject.toml`: Project dependencies

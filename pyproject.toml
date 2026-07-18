@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gspread>=6.2.1",
+    "indic-numtowords>=1.1.0",
     "indic-nlp-library>=0.92",
     "joblib>=1.5.1",
     "jsonlines>=4.0.0",
@@ -21,6 +22,12 @@ dependencies = [
     "transformers>=4.53.0",
     "vertexai>=1.71.1",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
