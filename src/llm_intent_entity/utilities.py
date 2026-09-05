@@ -22,12 +22,12 @@ lang_to_code = {
     'marathi': 'mr',
     'odia': 'or',
     'oria': 'or',
-    'assamese': 'or',
+    'assamese': 'as',
     'punjabi': 'pa',
     'english': 'en'
 }
 
-indic_langs = {'hi', 'bn', 'ta', 'te', 'gu', 'kn', 'ml', 'mr', 'or', 'pa'}
+indic_langs = {'hi', 'bn', 'ta', 'te', 'gu', 'kn', 'ml', 'mr', 'or', 'pa', 'as'}
 
 class IndicNormalizer:
     def __init__(self):
