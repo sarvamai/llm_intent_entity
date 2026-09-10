@@ -98,7 +98,7 @@ class ChatCompletionsAPI:
         num_workers: int = 500, 
         max_retries: int = 2, 
         system_prompt: Optional[str] = None, 
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
         max_tokens: int | None = None,
         timeout: float | None = None,
         gemini: bool = False,
@@ -186,7 +186,7 @@ class ChatCompletionsAPI:
                     "model": self.model_name,
                     "messages": messages,
                 }
-                if temperature or self.temperature:
+                if temperature is not None or self.temperature is not None:
                     params["temperature"] = temperature if temperature is not None else self.temperature
                 if self.max_tokens:
                     params["max_tokens"] = self.max_tokens
