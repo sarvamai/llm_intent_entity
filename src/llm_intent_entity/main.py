@@ -9,6 +9,10 @@ from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy
 
 logger = logging.getLogger(__name__)
 
+# A stalled Gemini call must not pin a worker with no deadline. 120 seconds
+# covers a normal flash response; None means the HTTP client waits forever.
+EVALUATION_LLM_TIMEOUT_SECONDS = 120.0
+
 # Get the project root directory (3 levels up from this file)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
@@ -251,7 +255,7 @@ def process_dataset_for_intent_entity_evaluation(
         base_url="",
         gemini=True,
         max_retries=0,
-        timeout=None,
+        timeout=EVALUATION_LLM_TIMEOUT_SECONDS,
         creds_path=creds_path,
         location=gemini_location,
     )
