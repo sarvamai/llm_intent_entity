@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 from typing import List, Dict, Any, Tuple
 import pandas as pd
+from .cache_match import evaluation_cache_key, responses_needed_from_cache
 from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics
 
 logger = logging.getLogger(__name__)
@@ -108,17 +109,12 @@ def query_llm_for_intent_entity_evaluation(
 
     items_to_query = []
     for item in evaluation_items:
-        cache_key = (item["hypothesis"], item["ground_truth"], item.get("context", ""))
-        if cache_key not in cached_responses_map:
+        if evaluation_cache_key(item) not in cached_responses_map:
             items_to_query.append(item)
-    
-    successful_from_cache = [
-        item for cache_key, item in cached_responses_map.items()
-        if any(
-            (eval_item["hypothesis"], eval_item["ground_truth"], eval_item.get("context", "")) == cache_key
-            for eval_item in evaluation_items
-        )
-    ]
+
+    successful_from_cache = responses_needed_from_cache(
+        cached_responses_map, evaluation_items
+    )
 
     newly_successful = []
     failed = []
