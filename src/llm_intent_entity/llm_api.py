@@ -158,7 +158,8 @@ class ChatCompletionsAPI:
             response: str
             mood: str
         try:
-            self.client.chat.completions.parse(
+            # Use beta endpoint to match generate_single_response() — parse() only exists under beta.chat.completions
+            self.client.beta.chat.completions.parse(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that always responds in JSON format."},
