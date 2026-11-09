@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from .llm_api import ChatCompletionsAPI
 import logging
 from pathlib import Path
@@ -6,6 +6,14 @@ import json
 from typing import List, Dict, Any, Tuple
 import pandas as pd
 from .utilities import IndicNormalizer, push_to_sheet, calculate_intent_accuracy, calculate_entity_metrics
+from .typed_entities import (
+    MatchPolicy,
+    TypedEntityCandidate,
+    TypedEntityScore,
+    entity_aware_text_signature,
+    score_typed_entities,
+    typed_score_explanation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +34,9 @@ class IntentEntityResponse(BaseModel):
     preserved_entities: str
     missing_entities: str
     entity_explanation: str
+    typed_entities_complete: bool = False
+    ground_truth_typed_entities: List[TypedEntityCandidate] = Field(default_factory=list)
+    hypothesis_typed_entities: List[TypedEntityCandidate] = Field(default_factory=list)
 
 def build_prompt(item: Dict[str, Any]) -> str:
     """Build prompt for intent entity evaluation"""
@@ -34,7 +45,8 @@ def build_prompt(item: Dict[str, Any]) -> str:
         "index": item["index"],
         "hypothesis": item["hypothesis"],
         "ground_truth": item["ground_truth"],
-        "context": item.get("context", "")
+        "context": item.get("context", ""),
+        "language": item.get("language", ""),
     }
     prompt += json.dumps(json_object, indent=2, ensure_ascii=False)
     return prompt
@@ -66,7 +78,11 @@ def normalize_texts_in_dataframe(df: pd.DataFrame, ref_col: str, pred_col: str, 
     df["norm_prediction"] = normalizer.normalize_texts(df[pred_col].astype(str).to_list(), df[lang_col].astype(str).to_list())
     return df
 
-def prepare_evaluation_items(df: pd.DataFrame) -> List[Dict[str, Any]]:
+def prepare_evaluation_items(
+    df: pd.DataFrame,
+    language_col: str = "language",
+    context_col: str = "context",
+) -> List[Dict[str, Any]]:
     """Prepare items for LLM evaluation"""
     items = []
     for idx, row in df.iterrows():
@@ -74,7 +90,8 @@ def prepare_evaluation_items(df: pd.DataFrame) -> List[Dict[str, Any]]:
             "index": idx,
             "hypothesis": row["norm_prediction"],
             "ground_truth": row["norm_reference"],
-            "context": row.get("context", "")
+            "context": row.get(context_col, ""),
+            "language": row.get(language_col, ""),
         }
         items.append(item)
     return items
@@ -101,24 +118,34 @@ def query_llm_for_intent_entity_evaluation(
                     cached_item = json.loads(line)
                     key = cached_item.get("key", {})
                     if key and "index" in key:
-                        cache_key = (key["hypothesis"], key["ground_truth"], key.get("context", ""))
+                        cache_key = (
+                            key["hypothesis"],
+                            key["ground_truth"],
+                            key.get("context", ""),
+                            key.get("language", ""),
+                        )
                         cached_responses_map[cache_key] = cached_item
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning(f"Skipping malformed cache line in {cache_file}: '{line.strip()}'. Error: {e}")
 
     items_to_query = []
+    successful_from_cache = []
     for item in evaluation_items:
-        cache_key = (item["hypothesis"], item["ground_truth"], item.get("context", ""))
-        if cache_key not in cached_responses_map:
-            items_to_query.append(item)
-    
-    successful_from_cache = [
-        item for cache_key, item in cached_responses_map.items()
-        if any(
-            (eval_item["hypothesis"], eval_item["ground_truth"], eval_item.get("context", "")) == cache_key
-            for eval_item in evaluation_items
+        cache_key = (
+            item["hypothesis"],
+            item["ground_truth"],
+            item.get("context", ""),
+            item.get("language", ""),
         )
-    ]
+        cached_item = cached_responses_map.get(cache_key)
+        if cached_item is None:
+            # Cache entries created before typed scoring did not include language.
+            legacy_cache_key = (*cache_key[:3], "")
+            cached_item = cached_responses_map.get(legacy_cache_key)
+        if cached_item is None:
+            items_to_query.append(item)
+        else:
+            successful_from_cache.append(cached_item)
 
     newly_successful = []
     failed = []
@@ -136,7 +163,11 @@ def query_llm_for_intent_entity_evaluation(
     all_successful = successful_from_cache + newly_successful
     return all_successful, failed
 
-def process_llm_responses(successful_responses: list, df: pd.DataFrame) -> pd.DataFrame:
+def process_llm_responses(
+    successful_responses: list,
+    df: pd.DataFrame,
+    match_policy: MatchPolicy | None = None,
+) -> pd.DataFrame:
     """Process LLM responses and add results to dataframe"""
     # Create a mapping from index to response
     response_map = {}
@@ -144,7 +175,7 @@ def process_llm_responses(successful_responses: list, df: pd.DataFrame) -> pd.Da
         key = item.get("key", {})
         response = item.get("response", {})
         if key and "index" in key:
-            response_map[key["index"]] = response
+            response_map[key["index"]] = (response, key)
 
     # Add response columns to dataframe
     intent_scores = []
@@ -154,17 +185,104 @@ def process_llm_responses(successful_responses: list, df: pd.DataFrame) -> pd.Da
     preserved_entities = []
     missing_entities = []
     entity_explanations = []
+    typed_ground_truth_entities = []
+    typed_hypothesis_entities = []
+    entity_precisions = []
+    entity_recalls = []
+    entity_f1_scores = []
+    named_entity_error_rates = []
+    entity_review_required = []
+    entity_review_reasons = []
+    entity_scoring_methods = []
 
     for idx in df.index:
         if idx in response_map:
-            resp = response_map[idx]
-            intent_scores.append(resp.get("intent_score", -1))
-            intent_explanations.append(resp.get("intent_explanation", ""))
-            entity_scores.append(resp.get("entity_score", -1.0))
-            ground_truth_entities.append(resp.get("ground_truth_entities", ""))
-            preserved_entities.append(resp.get("preserved_entities", ""))
-            missing_entities.append(resp.get("missing_entities", ""))
-            entity_explanations.append(resp.get("entity_explanation", ""))
+            resp, key = response_map[idx]
+            intent_score = resp.get("intent_score", -1)
+            intent_explanation = resp.get("intent_explanation", "")
+            typed_complete = resp.get("typed_entities_complete", False)
+            reference_candidates = resp.get("ground_truth_typed_entities", [])
+            hypothesis_candidates = resp.get("hypothesis_typed_entities", [])
+
+            if typed_complete:
+                try:
+                    typed_score = score_typed_entities(
+                        reference_candidates,
+                        hypothesis_candidates,
+                        language=key.get("language", ""),
+                        policy=match_policy,
+                    )
+                    canonical_references = [match.reference for match in typed_score.matches] + typed_score.missing
+                    canonical_hypotheses = [match.hypothesis for match in typed_score.matches] + typed_score.spurious
+                except (TypeError, ValueError, ValidationError) as exc:
+                    typed_score = TypedEntityScore(
+                        score=None,
+                        precision=None,
+                        recall=None,
+                        f1=None,
+                        named_entity_error_rate=None,
+                        review_required=True,
+                        review_reasons=[f"Invalid typed entity payload: {exc}"],
+                    )
+                    canonical_references = []
+                    canonical_hypotheses = []
+                reference_payload = [entity.typed_payload() for entity in canonical_references]
+                hypothesis_payload = [entity.typed_payload() for entity in canonical_hypotheses]
+
+                if (
+                    typed_score.score == 1.0
+                    and entity_aware_text_signature(key.get("ground_truth", ""), canonical_references)
+                    == entity_aware_text_signature(key.get("hypothesis", ""), canonical_hypotheses)
+                ):
+                    intent_score = 1
+                    deterministic_note = "Deterministic typed entities preserve the utterance after canonicalization."
+                    intent_explanation = f"{intent_explanation} {deterministic_note}".strip()
+
+                entity_score = typed_score.score if typed_score.score is not None else -1.0
+                gt_entities = ", ".join(
+                    f"{entity.entity_type.value}({entity.raw} -> {entity.display_value})"
+                    for entity in canonical_references
+                ) or "NA"
+                preserved = ", ".join(
+                    f"{match.entity_type.value}({match.reference.display_value})"
+                    for match in typed_score.matches
+                ) or "NA"
+                missing = ", ".join(
+                    f"{entity.entity_type.value}({entity.display_value})" for entity in typed_score.missing
+                ) or "NA"
+                entity_explanation = typed_score_explanation(typed_score)
+                entity_precisions.append(typed_score.precision)
+                entity_recalls.append(typed_score.recall)
+                entity_f1_scores.append(typed_score.f1)
+                named_entity_error_rates.append(typed_score.named_entity_error_rate)
+                entity_review_required.append(typed_score.review_required)
+                entity_review_reasons.append("; ".join(typed_score.review_reasons))
+                entity_scoring_methods.append("typed_deterministic")
+            else:
+                entity_score = resp.get("entity_score", -1.0)
+                gt_entities = resp.get("ground_truth_entities", "")
+                preserved = resp.get("preserved_entities", "")
+                missing = resp.get("missing_entities", "")
+                entity_explanation = resp.get("entity_explanation", "")
+                entity_precisions.append(None)
+                entity_recalls.append(None)
+                entity_f1_scores.append(None)
+                named_entity_error_rates.append(None)
+                entity_review_required.append(False)
+                entity_review_reasons.append("")
+                entity_scoring_methods.append("legacy_llm")
+                reference_payload = reference_candidates
+                hypothesis_payload = hypothesis_candidates
+
+            intent_scores.append(intent_score)
+            intent_explanations.append(intent_explanation)
+            entity_scores.append(entity_score)
+            ground_truth_entities.append(gt_entities)
+            preserved_entities.append(preserved)
+            missing_entities.append(missing)
+            entity_explanations.append(entity_explanation)
+            typed_ground_truth_entities.append(json.dumps(reference_payload, ensure_ascii=False))
+            typed_hypothesis_entities.append(json.dumps(hypothesis_payload, ensure_ascii=False))
         else:
             # Fill with error values for missing responses
             intent_scores.append(-1)
@@ -174,6 +292,15 @@ def process_llm_responses(successful_responses: list, df: pd.DataFrame) -> pd.Da
             preserved_entities.append("ERROR")
             missing_entities.append("ERROR")
             entity_explanations.append("ERROR: No response")
+            typed_ground_truth_entities.append("[]")
+            typed_hypothesis_entities.append("[]")
+            entity_precisions.append(None)
+            entity_recalls.append(None)
+            entity_f1_scores.append(None)
+            named_entity_error_rates.append(None)
+            entity_review_required.append(True)
+            entity_review_reasons.append("No response")
+            entity_scoring_methods.append("error")
 
     df["intent_score"] = intent_scores
     df["intent_explanation"] = intent_explanations
@@ -182,6 +309,15 @@ def process_llm_responses(successful_responses: list, df: pd.DataFrame) -> pd.Da
     df["preserved_entities"] = preserved_entities
     df["missing_entities"] = missing_entities
     df["entity_explanation"] = entity_explanations
+    df["ground_truth_typed_entities"] = typed_ground_truth_entities
+    df["hypothesis_typed_entities"] = typed_hypothesis_entities
+    df["entity_precision"] = entity_precisions
+    df["entity_recall"] = entity_recalls
+    df["entity_f1"] = entity_f1_scores
+    df["named_entity_error_rate"] = named_entity_error_rates
+    df["entity_review_required"] = entity_review_required
+    df["entity_review_reasons"] = entity_review_reasons
+    df["entity_scoring_method"] = entity_scoring_methods
 
     return df
 
@@ -195,17 +331,33 @@ def calculate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
             "total_samples": len(df),
             "valid_samples": 0,
             "intent_accuracy": 0.0,
-            "entity_metrics": {"mean": 0.0, "median": 0.0, "std": 0.0}
+            "entity_metrics": {"mean": 0.0, "median": 0.0, "std": 0.0},
+            "typed_entity_metrics": {
+                "samples": 0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "named_entity_error_rate": 0.0,
+            },
         }
 
     intent_accuracy = calculate_intent_accuracy(valid_rows["intent_score"].tolist())
     entity_metrics = calculate_entity_metrics(valid_rows["entity_score"].tolist())
+    typed_rows = valid_rows[valid_rows["entity_scoring_method"] == "typed_deterministic"]
+    typed_entity_metrics = {
+        "samples": len(typed_rows),
+        "precision": float(typed_rows["entity_precision"].mean()) if len(typed_rows) else 0.0,
+        "recall": float(typed_rows["entity_recall"].mean()) if len(typed_rows) else 0.0,
+        "f1": float(typed_rows["entity_f1"].mean()) if len(typed_rows) else 0.0,
+        "named_entity_error_rate": float(typed_rows["named_entity_error_rate"].mean()) if len(typed_rows) else 0.0,
+    }
 
     return {
         "total_samples": len(df),
         "valid_samples": len(valid_rows),
         "intent_accuracy": intent_accuracy,
-        "entity_metrics": entity_metrics
+        "entity_metrics": entity_metrics,
+        "typed_entity_metrics": typed_entity_metrics,
     }
 
 def save_outputs(df: pd.DataFrame, logs: List[Dict], failed: List[Dict], outputs_dir: Path, sheet_name: str, worksheet_prefix: str, creds_path: Path):
@@ -239,6 +391,7 @@ def process_dataset_for_intent_entity_evaluation(
     output_worksheet_name: str = "llm-intent-entity-output",
     ignore_cache: bool = False,
     gemini_location: str = "us-central1",
+    entity_match_policy: MatchPolicy | None = None,
 ):
     """Main function to process dataset for intent entity evaluation"""
     creds_path_obj = Path(creds_path)
@@ -264,14 +417,14 @@ def process_dataset_for_intent_entity_evaluation(
         df[context_col_name] = ""
     
     df = normalize_texts_in_dataframe(df, reference_col_name, predicted_col_name, language_col_name)
-    evaluation_items = prepare_evaluation_items(df)
+    evaluation_items = prepare_evaluation_items(df, language_col_name, context_col_name)
     
     dataset_name = Path(dataset_path).stem
     successful, failed = query_llm_for_intent_entity_evaluation(
         evaluation_items, dataset_name, api, ignore_cache=ignore_cache
     )
     
-    df = process_llm_responses(successful, df)
+    df = process_llm_responses(successful, df, entity_match_policy)
     metrics = calculate_metrics(df)
     
     print("\n=== INTENT ENTITY EVALUATION RESULTS ===")
@@ -280,6 +433,11 @@ def process_dataset_for_intent_entity_evaluation(
     print(f"Intent accuracy: {metrics['intent_accuracy']:.4f}")
     print(f"Entity score (mean): {metrics['entity_metrics']['mean']:.4f}")
     print(f"Entity score (median): {metrics['entity_metrics']['median']:.4f}")
+    if metrics["typed_entity_metrics"]["samples"]:
+        print(f"Typed entity precision: {metrics['typed_entity_metrics']['precision']:.4f}")
+        print(f"Typed entity recall: {metrics['typed_entity_metrics']['recall']:.4f}")
+        print(f"Typed entity F1: {metrics['typed_entity_metrics']['f1']:.4f}")
+        print(f"Named Entity Error Rate: {metrics['typed_entity_metrics']['named_entity_error_rate']:.4f}")
     
     outputs_dir = PROJECT_ROOT / "outputs" / Path(dataset_path).stem
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -289,15 +447,22 @@ def process_dataset_for_intent_entity_evaluation(
     for item in successful:
         key = item.get("key", {})
         response = item.get("response", {})
+        processed_row = df.loc[key["index"]] if key.get("index") in df.index else None
         log_records.append({
             "index": key.get("index", -1),
             "hypothesis": key.get("hypothesis", ""),
             "ground_truth": key.get("ground_truth", ""),
             "context": key.get("context", ""),
-            "intent_score": response.get("intent_score", -1),
-            "intent_explanation": response.get("intent_explanation", ""),
-            "entity_score": response.get("entity_score", -1.0),
-            "entity_explanation": response.get("entity_explanation", "")
+            "intent_score": processed_row["intent_score"] if processed_row is not None else response.get("intent_score", -1),
+            "intent_explanation": processed_row["intent_explanation"] if processed_row is not None else response.get("intent_explanation", ""),
+            "entity_score": processed_row["entity_score"] if processed_row is not None else response.get("entity_score", -1.0),
+            "entity_explanation": processed_row["entity_explanation"] if processed_row is not None else response.get("entity_explanation", ""),
+            "entity_precision": processed_row["entity_precision"] if processed_row is not None else None,
+            "entity_recall": processed_row["entity_recall"] if processed_row is not None else None,
+            "entity_f1": processed_row["entity_f1"] if processed_row is not None else None,
+            "named_entity_error_rate": processed_row["named_entity_error_rate"] if processed_row is not None else None,
+            "entity_review_required": processed_row["entity_review_required"] if processed_row is not None else False,
+            "entity_scoring_method": processed_row["entity_scoring_method"] if processed_row is not None else "error",
         })
     
     save_outputs(df, log_records, failed, outputs_dir, output_sheet_name, output_worksheet_name, creds_path_obj)

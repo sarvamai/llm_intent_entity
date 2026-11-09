@@ -105,9 +105,27 @@ You will be given a JSON object with the following structure:
   "index": int,
   "hypothesis": str,
   "ground_truth": str,
-  "context": str
+  "context": str,
+  "language": str
 }
 ```
+
+Before scoring, extract every critical entity from both texts into typed spans. Copy
+each `raw` span exactly from its source text and use only these entity types:
+
+- `PHONE_NUMBER`: telephone and mobile digit sequences
+- `ACCOUNT_ID`: account numbers, customer IDs, PINs, and other numeric identifiers
+- `AMOUNT`: currency or monetary values
+- `DATE`: calendar dates (not generic relative words without a resolved date)
+- `PERSON`: people's names
+- `LOCATION`: addresses, cities, states, and other named places
+
+Do not translate number words, generate canonical values, or decide whether two
+entities match. The evaluator performs those operations deterministically. Set
+`typed_entities_complete` to true only after checking both texts and confirming
+that every key entity fits one of the supported types above; otherwise set it to
+false so the legacy scorer remains authoritative. The legacy entity strings and
+score remain required for compatibility with older consumers.
 
 # Output Format
 Your final output must be a single JSON object with the following structure:
@@ -121,6 +139,13 @@ Your final output must be a single JSON object with the following structure:
     "ground_truth_entities": str, // comma-separated list of entities from ground truth
     "preserved_entities": str, // comma-separated list of correctly preserved entities
     "missing_entities": str, // comma-separated list of missing or incorrect entities
-    "entity_explanation": str // Brief explanation of your entity score
+    "entity_explanation": str, // Brief explanation of your entity score
+    "typed_entities_complete": bool,
+    "ground_truth_typed_entities": [
+        {"entity_type": "PHONE_NUMBER|ACCOUNT_ID|AMOUNT|DATE|PERSON|LOCATION", "raw": str}
+    ],
+    "hypothesis_typed_entities": [
+        {"entity_type": "PHONE_NUMBER|ACCOUNT_ID|AMOUNT|DATE|PERSON|LOCATION", "raw": str}
+    ]
 }
 ```
