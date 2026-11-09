@@ -7,6 +7,8 @@ not depend on a subjective model-generated score.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -14,8 +16,6 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from enum import Enum
 from functools import lru_cache
-import re
-import unicodedata
 
 from indic_numtowords import num2words, supported_langs
 from pydantic import BaseModel, Field
@@ -461,6 +461,56 @@ def _validate_grouped_number(text: str) -> bool:
     return bool(western or indian)
 
 
+def _segment_identifier_word(
+    token: str, lexicon: dict[tuple[str, ...], int]
+) -> list[str] | None:
+    """Safely split one normalized word into atomic identifier number words.
+
+    This recovers forms produced by upstream normalization (for example
+    ``fifty-eight`` -> ``fiftyeight``) for ``PHONE_NUMBER``/``ACCOUNT_ID``
+    parsing only. The split is accepted only when the full token has exactly
+    one segmentation whose every part is a single-token number word; ambiguous
+    or partial segmentations abstain.
+    """
+
+    if not token.isalpha():
+        return None
+
+    singles = {
+        key[0]
+        for key in lexicon
+        if len(key) == 1 and isinstance(key[0], str) and key[0].isalpha()
+    }
+    if token in singles or len(token) < 4:
+        return None
+
+    memo: dict[int, list[tuple[str, ...]] | None] = {}
+
+    def segment(index: int) -> list[tuple[str, ...]]:
+        if index == len(token):
+            return [()]
+        cached = memo.get(index)
+        if cached is not None:
+            return cached
+        paths: list[tuple[str, ...]] = []
+        for end in range(index + 2, len(token) + 1):
+            part = token[index:end]
+            if part not in singles:
+                continue
+            for rest in segment(end):
+                paths.append((part, *rest))
+                if len(paths) > 1:
+                    memo[index] = paths
+                    return paths
+        memo[index] = paths
+        return paths
+
+    paths = segment(0)
+    if len(paths) != 1 or len(paths[0]) < 2:
+        return None
+    return list(paths[0])
+
+
 def parse_identifier(raw: str, language: str | None = None) -> NumberParse:
     """Parse an identifier as a digit sequence, preserving spoken chunks.
 
@@ -509,6 +559,11 @@ def parse_identifier(raw: str, language: str | None = None) -> NumberParse:
             value, consumed = match
             digits.append(str(value))
             position += consumed
+            continue
+
+        segmented = _segment_identifier_word(token, numbers)
+        if segmented:
+            tokens[position : position + 1] = segmented
             continue
 
         return NumberParse(None, f"unrecognized identifier token '{token}'")

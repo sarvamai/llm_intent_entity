@@ -1,20 +1,44 @@
+"""Tests for deterministic typed entity parsing and scoring."""
+
+import importlib.util
 import json
+import sys
+import types
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-import llm_intent_entity.main as main_module
-from llm_intent_entity.main import process_llm_responses
-from llm_intent_entity.typed_entities import (
-    EntityType,
-    MatchPolicy,
-    TypedEntityCandidate,
-    canonicalize_entity,
-    parse_amount,
-    parse_identifier,
-    score_typed_entities,
-)
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src" / "llm_intent_entity"
+
+
+def _load_typed_entities():
+    pkg = sys.modules.get("llm_intent_entity")
+    if pkg is None or not hasattr(pkg, "__path__"):
+        pkg = types.ModuleType("llm_intent_entity")
+        pkg.__path__ = [str(SRC)]
+        sys.modules["llm_intent_entity"] = pkg
+    mod = sys.modules.get("llm_intent_entity.typed_entities")
+    if mod is not None:
+        return mod
+    spec = importlib.util.spec_from_file_location(
+        "llm_intent_entity.typed_entities", SRC / "typed_entities.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["llm_intent_entity.typed_entities"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+typed_entities = _load_typed_entities()
+EntityType = typed_entities.EntityType
+MatchPolicy = typed_entities.MatchPolicy
+TypedEntityCandidate = typed_entities.TypedEntityCandidate
+canonicalize_entity = typed_entities.canonicalize_entity
+parse_amount = typed_entities.parse_amount
+parse_identifier = typed_entities.parse_identifier
+score_typed_entities = typed_entities.score_typed_entities
 
 
 ISSUE_5_REFERENCE = "fifty-eight seven twenty double teen nau forty-six"
@@ -187,6 +211,110 @@ def test_partial_results_report_precision_recall_f1_and_neer() -> None:
     assert score.insertions == 1
 
 
+def test_normalized_issue_5_phone_and_account_id_are_preserved() -> None:
+    normalized_reference = "fiftyeight seven twenty double teen nau fortysix"
+    normalized_hypothesis = "fifty eight seven twenty double three nine forty six"
+
+    reference = parse_identifier(normalized_reference, language="hi")
+    hypothesis = parse_identifier(normalized_hypothesis, language="hi")
+    assert reference.value == "5872033946"
+    assert hypothesis.value == reference.value
+
+    for entity_type in (EntityType.PHONE_NUMBER, EntityType.ACCOUNT_ID):
+        score = score_typed_entities(
+            [candidate(entity_type, normalized_reference)],
+            [candidate(entity_type, normalized_hypothesis)],
+            language="hi",
+        )
+        assert score.score == 1.0
+        assert not score.review_required
+
+
+def test_identifier_parses_concatenated_compound_number_words() -> None:
+    cases = [
+        ("fiftyeight", "58"),
+        ("fortysix", "46"),
+        ("twentythree", "23"),
+        ("thirtyone", "31"),
+        ("eightyfour", "84"),
+        ("ninetynine", "99"),
+    ]
+    for raw, expected in cases:
+        parsed = parse_identifier(raw, language="en")
+        assert parsed.value == expected, raw
+        assert not parsed.review_required
+
+
+@pytest.mark.parametrize(
+    "entity_type", [EntityType.PHONE_NUMBER, EntityType.ACCOUNT_ID]
+)
+def test_normalized_identifier_surfaces_are_scored_for_identifiers(
+    entity_type: EntityType,
+) -> None:
+    score = score_typed_entities(
+        [candidate(entity_type, "fiftyeight seven twenty double teen nau fortysix")],
+        [candidate(entity_type, ISSUE_5_HYPOTHESIS)],
+        language="hi",
+    )
+    assert score.score == 1.0
+    assert not score.review_required
+
+
+def test_amount_parsing_is_not_changed_by_identifier_segmentation() -> None:
+    for raw in ("fiftyeight", "fortysix", "twentyone"):
+        parsed, currency = parse_amount(raw, language="en")
+        assert parsed.value is None
+        assert currency == "INR"
+        assert parsed.review_required
+
+    parsed, currency = parse_amount("fifty eight", language="en")
+    assert parsed.value == "58"
+    assert currency == "INR"
+
+
+def test_concatenated_identifier_segmentation_abstains_when_ambiguous_or_malformed() -> (
+    None
+):
+    cases = [
+        "doublezero",  # repeat control is not a value segment
+        "triplefive",
+        "onehundred",  # scale word, not a digit-sequence segment
+        "tootwo",
+        "fiftyeighth",
+    ]
+    for raw in cases:
+        parsed = parse_identifier(raw, language="en")
+        assert parsed.value is None, raw
+        assert parsed.review_required, raw
+
+
+def test_atomic_teen_forms_remain_unambiguous() -> None:
+    for raw, expected in (("eighteen", "18"), ("nineteen", "19"), ("fourteen", "14")):
+        parsed = parse_identifier(raw, language="en")
+        assert parsed.value == expected
+        assert not parsed.review_required
+
+
+def test_person_location_and_date_parsing_paths_are_unchanged() -> None:
+    name = canonicalize_entity(candidate(EntityType.PERSON, "John Smith"))
+    assert name.canonical_value == "john smith"
+    assert not name.review_required
+
+    location_score = score_typed_entities(
+        [candidate(EntityType.LOCATION, "Bengaluru")],
+        [candidate(EntityType.LOCATION, "Bangaluru")],
+        policy=MatchPolicy(location_mode="fuzzy", fuzzy_threshold=0.85),
+    )
+    assert location_score.score == 1.0
+
+    ambiguous_date = score_typed_entities(
+        [candidate(EntityType.DATE, "03/04/2026")],
+        [candidate(EntityType.DATE, "3 April 2026")],
+        language="en",
+    )
+    assert ambiguous_date.review_required
+
+
 def test_phone_length_policy_abstains_on_implausible_span() -> None:
     entity = canonicalize_entity(candidate(EntityType.PHONE_NUMBER, "one two three"))
 
@@ -195,6 +323,9 @@ def test_phone_length_policy_abstains_on_implausible_span() -> None:
 
 
 def test_process_responses_overrides_issue_5_llm_scores_deterministically() -> None:
+    main_module = pytest.importorskip("llm_intent_entity.main")
+    process_llm_responses = main_module.process_llm_responses
+
     dataframe = pd.DataFrame(
         {
             "norm_reference": [ISSUE_5_REFERENCE],
@@ -240,6 +371,9 @@ def test_process_responses_overrides_issue_5_llm_scores_deterministically() -> N
 
 
 def test_old_cached_responses_keep_legacy_entity_score() -> None:
+    main_module = pytest.importorskip("llm_intent_entity.main")
+    process_llm_responses = main_module.process_llm_responses
+
     dataframe = pd.DataFrame(
         {"norm_reference": ["hello"], "norm_prediction": ["hello"]}
     )
@@ -265,6 +399,9 @@ def test_old_cached_responses_keep_legacy_entity_score() -> None:
 
 
 def test_malformed_typed_cache_payload_abstains_without_crashing() -> None:
+    main_module = pytest.importorskip("llm_intent_entity.main")
+    process_llm_responses = main_module.process_llm_responses
+
     dataframe = pd.DataFrame({"norm_reference": ["123"], "norm_prediction": ["123"]})
     responses = [
         {
@@ -290,6 +427,8 @@ def test_malformed_typed_cache_payload_abstains_without_crashing() -> None:
 def test_language_aware_cache_reuses_pre_language_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    main_module = pytest.importorskip("llm_intent_entity.main")
+
     cache_dir = tmp_path / "outputs" / "cache"
     cache_dir.mkdir(parents=True)
     cached = {
